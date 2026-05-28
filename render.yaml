@@ -1,5 +1,3 @@
-# render.yaml - Déploiement automatique du proxy Telegram sur Render
-
 services:
   - type: web
     name: telegram-proxy
@@ -10,7 +8,7 @@ services:
     startCommand: node server.js
     healthCheckPath: /health
     autoDeploy: true
-    envVars:
+    envVarGroups:
       - key: BOT_TOKEN
         value: 8507961561:AAFGiLtXzjIcR-j2IQuIDA55QZDQEYQFq_4
       - key: CHAT_ID
