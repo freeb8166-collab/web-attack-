@@ -1,0 +1,17 @@
+# render.yaml - Déploiement automatique du proxy Telegram sur Render
+
+services:
+  - type: web
+    name: telegram-proxy
+    runtime: node
+    repo: https://github.com/freeb8166-collab/web-attack-
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: BOT_TOKEN
+        value: 8507961561:AAFGiLtXzjIcR-j2IQuIDA55QZDQEYQFq_4
+      - key: CHAT_ID
+        value: 6767182328
