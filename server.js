@@ -5,7 +5,7 @@ const app = express();
 // ⚠️ Remplace 'ton-username.github.io' par ton vrai domaine GitHub Pages
 const ALLOWED_ORIGINS = [
     'https://freeb8166-collab.github.io',   // ⚠️ À MODIFIER
-    'https://ton-username.github.io',
+    
     'http://localhost:5500',
     'http://127.0.0.1:5500',
     'http://localhost:3000'
