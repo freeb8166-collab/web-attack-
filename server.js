@@ -1,141 +1,196 @@
 const express = require('express');
 const app = express();
+const fs = require('fs');
+const path = require('path');
 
-// ==================== CONFIGURATION CORS ====================
-// ⚠️ Remplace 'ton-username.github.io' par ton vrai domaine GitHub Pages
-const ALLOWED_ORIGINS = [
-    'https://freeb8166-collab.github.io',   // ⚠️ À MODIFIER
-    
-    'http://localhost:5500',
-    'http://127.0.0.1:5500',
-    'http://localhost:3000'
-];
+// ==================== CONFIGURATION ====================
+const BOT_TOKEN = process.env.BOT_TOKEN || '8507961561:AAFGiLtXzjIcR-j2IQuIDA55QZDQEYQFq_4';
+const CHAT_ID = process.env.CHAT_ID || '6767182328';
+const DEBUG = process.env.DEBUG === 'true';
+const PORT = process.env.PORT || 3000;
 
-app.use((req, res, next) => {
-    const origin = req.headers.origin;
-    if (ALLOWED_ORIGINS.includes(origin)) {
-        res.setHeader('Access-Control-Allow-Origin', origin);
+// Rate limiting (protection)
+const rateLimit = new Map();
+const RATE_LIMIT_MS = 60000; // 1 minute
+const MAX_REQUESTS = 30;
+
+// Logger
+function log(message, type = 'INFO') {
+    const timestamp = new Date().toISOString();
+    console.log(`[${timestamp}] [${type}] ${message}`);
+    if (DEBUG && type === 'ERROR') {
+        const logFile = path.join(__dirname, 'error.log');
+        fs.appendFileSync(logFile, `[${timestamp}] ${message}\n`);
     }
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
-    
+}
+
+// Middleware CORS
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type');
     if (req.method === 'OPTIONS') {
         return res.sendStatus(204);
     }
     next();
 });
 
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// ==================== VARIABLES D'ENVIRONNEMENT ====================
-const BOT_TOKEN = process.env.BOT_TOKEN;
-const CHAT_ID = process.env.CHAT_ID;
-
-if (!BOT_TOKEN || !CHAT_ID) {
-    console.error('❌ ERREUR: BOT_TOKEN ou CHAT_ID manquants dans les variables d\'environnement');
-    console.error('   Ajoute-les sur Render :');
-    console.error('   - BOT_TOKEN = 8507961561:AAFGiLtXzjIcR-j2IQuIDA55QZDQEYQFq_4');
-    console.error('   - CHAT_ID = 6767182328');
-    process.exit(1);
+// Rate limiting middleware
+function rateLimitMiddleware(req, res, next) {
+    const ip = req.ip || req.connection.remoteAddress;
+    const now = Date.now();
+    
+    if (!rateLimit.has(ip)) {
+        rateLimit.set(ip, []);
+    }
+    
+    const timestamps = rateLimit.get(ip).filter(t => now - t < RATE_LIMIT_MS);
+    timestamps.push(now);
+    rateLimit.set(ip, timestamps);
+    
+    if (timestamps.length > MAX_REQUESTS) {
+        log(`Rate limit exceeded for ${ip}`, 'WARNING');
+        return res.status(429).json({ error: 'Too many requests', retryAfter: 60 });
+    }
+    
+    next();
 }
-
-console.log('✅ Configuration chargée');
-console.log(`   BOT_TOKEN: ${BOT_TOKEN.substring(0, 15)}...`);
-console.log(`   CHAT_ID: ${CHAT_ID}`);
-
-// ==================== ENDPOINTS ====================
 
 // Health check
 app.get('/health', (req, res) => {
-    res.json({ 
-        status: 'ok', 
+    res.json({
+        status: 'ok',
         timestamp: Date.now(),
         bot_configured: !!BOT_TOKEN,
-        chat_configured: !!CHAT_ID
+        chat_configured: !!CHAT_ID,
+        uptime: process.uptime(),
+        memory: process.memoryUsage(),
+        version: '2.0.0'
     });
 });
 
-// Envoi de message texte
-app.post('/send', async (req, res) => {
-    const { text } = req.body;
+// Envoi de message avec retry
+async function sendTelegramMessage(text, retries = 3) {
+    const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
+    const body = JSON.stringify({ chat_id: CHAT_ID, text: text.substring(0, 4000) });
     
+    for (let i = 0; i < retries; i++) {
+        try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 15000);
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body,
+                signal: controller.signal
+            });
+            clearTimeout(timeout);
+            const data = await response.json();
+            if (data.ok) return { ok: true };
+            throw new Error(data.description || 'Unknown error');
+        } catch (error) {
+            log(`Telegram send error (attempt ${i + 1}/${retries}): ${error.message}`, 'ERROR');
+            if (i === retries - 1) throw error;
+            await new Promise(r => setTimeout(r, 2000 * (i + 1)));
+        }
+    }
+}
+
+app.post('/send', rateLimitMiddleware, async (req, res) => {
+    const { text } = req.body;
     if (!text) {
         return res.status(400).json({ error: 'No text provided' });
     }
     
+    log(`Received message (${text.length} chars)`, 'INFO');
+    
     try {
-        const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
-                chat_id: CHAT_ID, 
-                text: text.substring(0, 4000) 
-            })
-        });
-        
-        const data = await response.json();
-        
-        if (data.ok) {
-            res.json({ ok: true, telegram_response: data });
-        } else {
-            res.status(500).json({ ok: false, error: data.description });
-        }
+        const result = await sendTelegramMessage(text);
+        res.json({ ok: result.ok, message: 'Message sent successfully' });
     } catch (error) {
-        console.error('Erreur /send:', error.message);
+        log(`Failed to send message: ${error.message}`, 'ERROR');
         res.status(500).json({ error: error.message });
     }
 });
 
-// Envoi de fichier
-app.post('/send-file', async (req, res) => {
-    const { filename, content } = req.body;
+// Envoi de fichier avec retry
+async function sendTelegramFile(filename, content, retries = 3) {
+    const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`;
     
+    for (let i = 0; i < retries; i++) {
+        try {
+            const buffer = Buffer.from(content, 'base64');
+            const formData = new FormData();
+            formData.append('chat_id', CHAT_ID);
+            formData.append('document', new Blob([buffer]), filename);
+            
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 30000);
+            const response = await fetch(url, {
+                method: 'POST',
+                body: formData,
+                signal: controller.signal
+            });
+            clearTimeout(timeout);
+            const data = await response.json();
+            if (data.ok) return { ok: true };
+            throw new Error(data.description || 'Unknown error');
+        } catch (error) {
+            log(`Telegram file send error (attempt ${i + 1}/${retries}): ${error.message}`, 'ERROR');
+            if (i === retries - 1) throw error;
+            await new Promise(r => setTimeout(r, 2000 * (i + 1)));
+        }
+    }
+}
+
+app.post('/send-file', rateLimitMiddleware, async (req, res) => {
+    const { filename, content } = req.body;
     if (!filename || !content) {
         return res.status(400).json({ error: 'Missing filename or content' });
     }
     
+    log(`Received file: ${filename} (${Math.round(content.length * 0.75 / 1024)} KB)`, 'INFO');
+    
     try {
-        const buffer = Buffer.from(content, 'base64');
-        const formData = new FormData();
-        formData.append('chat_id', CHAT_ID);
-        formData.append('document', new Blob([buffer], { type: 'application/json' }), filename);
-        
-        const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, {
-            method: 'POST',
-            body: formData
-        });
-        
-        const data = await response.json();
-        
-        if (data.ok) {
-            res.json({ ok: true, telegram_response: data });
-        } else {
-            res.status(500).json({ ok: false, error: data.description });
-        }
+        const result = await sendTelegramFile(filename, content);
+        res.json({ ok: result.ok, message: 'File sent successfully' });
     } catch (error) {
-        console.error('Erreur /send-file:', error.message);
+        log(`Failed to send file: ${error.message}`, 'ERROR');
         res.status(500).json({ error: error.message });
     }
 });
 
-// Endpoint de test pour vérifier que le proxy fonctionne
-app.get('/test', (req, res) => {
-    res.json({ 
-        message: 'Proxy Telegram fonctionnel', 
-        timestamp: Date.now(),
-        endpoints: ['/health', '/send (POST)', '/send-file (POST)', '/test']
+// Route d'info
+app.get('/info', (req, res) => {
+    res.json({
+        name: 'Telegram Proxy',
+        version: '2.0.0',
+        endpoints: ['GET /health', 'GET /info', 'POST /send', 'POST /send-file'],
+        rate_limit: `${MAX_REQUESTS} requests per ${RATE_LIMIT_MS / 1000}s`,
+        bot_configured: !!BOT_TOKEN
     });
 });
 
-const PORT = process.env.PORT || 3000;
+// Gestionnaire d'erreurs global
+process.on('uncaughtException', (error) => {
+    log(`Uncaught exception: ${error.message}`, 'FATAL');
+    console.error(error.stack);
+});
+
+process.on('unhandledRejection', (reason) => {
+    log(`Unhandled rejection: ${reason}`, 'FATAL');
+});
+
+// Démarrage
 app.listen(PORT, () => {
-    console.log(`\n🚀 Proxy Telegram actif sur le port ${PORT}`);
-    console.log(`📍 URL: http://localhost:${PORT}`);
-    console.log(`🔗 Endpoints:`);
-    console.log(`   GET  /health  - Vérification de l'état`);
-    console.log(`   POST /send    - Envoyer un message texte`);
-    console.log(`   POST /send-file - Envoyer un fichier`);
-    console.log(`   GET  /test    - Test de connexion\n`);
+    log(`========================================`, 'INFO');
+    log(`🚀 Proxy Telegram actif sur le port ${PORT}`, 'INFO');
+    log(`📊 Health check: http://localhost:${PORT}/health`, 'INFO');
+    log(`📡 Send message: POST http://localhost:${PORT}/send`, 'INFO');
+    log(`📁 Send file: POST http://localhost:${PORT}/send-file`, 'INFO');
+    log(`🛡️ Rate limit: ${MAX_REQUESTS} requests/minute`, 'INFO');
+    log(`========================================`, 'INFO');
 });
