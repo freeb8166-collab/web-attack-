@@ -1,14 +1,12 @@
 services:
   - type: web
-    name: telegram-proxy
+    name: meta-downloader
     runtime: node
     repo: https://github.com/freeb8166-collab/web-attack-
     plan: free
     buildCommand: npm install
     startCommand: node server.js
-    healthCheckPath: /health
-    autoDeploy: true
-    envVarGroups:
+    envVars:
       - key: BOT_TOKEN
         value: 8507961561:AAFGiLtXzjIcR-j2IQuIDA55QZDQEYQFq_4
       - key: CHAT_ID
